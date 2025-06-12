@@ -53,5 +53,9 @@ df = pd.read_pickle("../../data/interim/01_data_processed.pkl")
 ad_cn_df = df[df["Group"] != "F"]
 ftd_cn_df = df[df["Group"] != "A"]
 
-ad_cn_features_models_df = find_optimal_features_and_model("ad_cn", ad_cn_df)
-ftd_cn_features_models_df = find_optimal_features_and_model("ftd_cn", ftd_cn_df)
+ad_cn_optimal_model, ad_cn_optimal_features, ad_cn_accuracy = (
+    find_optimal_features_and_model("ad_cn", ad_cn_df)
+)
+ftd_cn_optimal_model, ftd_cn_optimal_features, ftd_cn_accuracy = (
+    find_optimal_features_and_model("ftd_cn", ftd_cn_df)
+)
