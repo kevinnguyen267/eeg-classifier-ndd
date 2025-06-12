@@ -9,7 +9,11 @@ from mne_icalabel import label_components
 
 def get_subjects(file):
     participants = pd.read_csv(file, sep="\t")
-    return participants[["participant_id", "Group"]].set_index("participant_id")
+    return (
+        participants[["participant_id", "Group"]]
+        .set_index("participant_id")
+        .rename_axis("subject_id")
+    )
 
 
 def read_raw_eeg(file):
@@ -27,7 +31,7 @@ def preprocess(raw):
     asr.fit(raw_filtered)
     raw_asr = asr.transform(raw_filtered)
 
-    # Independent Component Analysis (ICA) method to filter out eye/jaw artifacts
+    # Independent Component Analysis (ICA) method to filter out eye/muscle artifacts
     ica = mne.preprocessing.ICA(
         n_components=len(raw_asr.info["ch_names"]), method="infomax"
     )
@@ -46,25 +50,31 @@ def epoch(data):
     return mne.Epochs(data, events, tmin=0, tmax=4, baseline=None)
 
 
-def extract_alpha_rbp(epochs, sf):
+def extract_rbps(epochs, sfreq, win, bands):
     x = epochs.get_data()
-    fmin = 0.5
-    fmax = 45
-    win = int(2 / fmin * sf)
     # Obtain Power Spectral Density (PSD) using the Welch method over the whole frequency range of interest (0.5-45 Hz)
     psds, freqs = mne.time_frequency.psd_array_welch(
-        x, sf, fmin=fmin, fmax=fmax, n_fft=win
+        x, sfreq, fmin=0.5, fmax=45, n_fft=win
     )
 
-    # Calculate Relative Band Power (RBP) of the Alpha band (8-13 Hz)
-    alpha_idx = np.logical_and(freqs >= 8, freqs <= 13)
-    alpha_power_total = np.mean(np.sum(psds[:, :, alpha_idx], axis=2))
-    all_bands_power_total = np.mean(np.sum(psds[:, :, :], axis=2))
-    return alpha_power_total / all_bands_power_total
+    # Calculate total band power (mean over epochs and channels)
+    total_power = np.mean(np.sum(psds, axis=2))
+
+    rbps = {}
+    # Calculate Relative Band Power (RBP) for each band
+    # psds shape (n_epochs, n_channels, n_freqs)
+    for band, (fmin, fmax) in bands.items():
+        idx = np.logical_and(freqs >= fmin, freqs <= fmax)
+        band_power = np.mean(np.sum(psds[:, :, idx], axis=2))
+        rbps[band] = band_power / total_power
+
+    return rbps
 
 
+# Intialize DataFrame with subject data
 df = get_subjects("../../data/raw/openneuro-ds004504/participants.tsv")
 
+# Preprocess and segment into epochs
 files = glob("../../data/raw/openneuro-ds004504/*/*/*.set")
 for f in files:
     subject_id = f.split("/")[5]
@@ -72,8 +82,25 @@ for f in files:
     raw = read_raw_eeg(f)
     data = preprocess(raw)
     epochs = epoch(data)
-    alpha_rbp = extract_alpha_rbp(epochs, raw.info["sfreq"])
+    epochs.save(f"../../data/interim/epochs/{subject_id}-epo.fif", overwrite=True)
 
-    df.loc[subject_id, "alpha_rbp"] = alpha_rbp
 
-df.to_pickle("../../data/interim/preprocessed.pkl")
+# Extract features from epochs
+sfreq = read_raw_eeg(files[0]).info["sfreq"]
+win = int(2 / 0.5 * sfreq)
+files = glob("../../data/interim/epochs/*epo.fif")
+bands = {
+    "delta": (0.5, 4),
+    "theta": (4, 8),
+    "alpha": (8, 13),
+    "beta": (13, 25),
+    "gamma": (25, 45),
+}
+for f in files:
+    subject_id = f.split("/")[5].rstrip("-epo.fif")
+    epochs = mne.read_epochs(f)
+    rbps = extract_rbps(epochs, sfreq, win, bands)
+    for band, rbp in rbps.items():
+        df.loc[subject_id, f"{band}_rbp"] = rbp
+
+df.to_pickle("../../data/interim/01_data_processed.pkl")
